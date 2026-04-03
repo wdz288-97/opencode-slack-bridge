@@ -5,7 +5,12 @@ interface StreamState {
   channelId: string
   messageTs: string
   sessionId: string
+  originalChannelId: string  // Where user's message was (for reactions)
+  originalMessageTs: string  // User's message timestamp (for reactions)
+  threadTs: string           // Thread timestamp (the streaming message)
   accumulatedText: string
+  accumulatedThinking: string
+  isThinkingActive: boolean
   lastUpdate: number
   toolOutputs: Map<string, ToolOutput>
 }
@@ -20,6 +25,23 @@ interface ToolOutput {
 
 const UPDATE_INTERVAL_MS = 500
 const MAX_MESSAGE_LENGTH = 4000 // Slack's actual limit
+
+// Regex patterns for thinking blocks
+const THINKING_TAGS = [
+  /<thinking>([\s\S]*?)<\/thinking>/gi,
+  /<antThinking>([\s\S]*?)<\/antThinking>/gi,
+]
+
+// Opening tags that indicate thinking started (no closing yet)
+const OPENING_TAGS = [
+  /<thinking>/i,
+  /<antThinking>/i,
+]
+
+const CLOSING_TAGS = [
+  /<\/thinking>/i,
+  /<\/antThinking>/i,
+]
 
 export class StreamManager {
   private streams = new Map<string, StreamState>()
@@ -38,13 +60,20 @@ export class StreamManager {
   async startStream(
     channelId: string,
     messageTs: string,
-    sessionId: string
+    sessionId: string,
+    originalChannelId?: string,
+    originalMessageTs?: string
   ): Promise<void> {
     const state: StreamState = {
       channelId,
       messageTs,
       sessionId,
+      originalChannelId: originalChannelId || channelId,
+      originalMessageTs: originalMessageTs || messageTs,
+      threadTs: messageTs,
       accumulatedText: '',
+      accumulatedThinking: '',
+      isThinkingActive: false,
       lastUpdate: Date.now(),
       toolOutputs: new Map(),
     }
@@ -93,7 +122,32 @@ export class StreamManager {
     properties: { field: string; delta: string }
   ): void {
     if (properties.field === 'text') {
-      state.accumulatedText += properties.delta
+      const delta = properties.delta
+
+      // Check for opening/closing thinking tags in the delta
+      for (const openTag of OPENING_TAGS) {
+        if (openTag.test(delta)) {
+          state.isThinkingActive = true
+          openTag.lastIndex = 0 // Reset regex
+          break
+        }
+      }
+
+      for (const closeTag of CLOSING_TAGS) {
+        if (closeTag.test(delta)) {
+          state.isThinkingActive = false
+          closeTag.lastIndex = 0 // Reset regex
+          break
+        }
+      }
+
+      // Route to thinking or answer
+      if (state.isThinkingActive) {
+        state.accumulatedThinking += delta
+      } else {
+        state.accumulatedText += delta
+      }
+
       this.scheduleUpdate(state)
     }
   }
@@ -121,7 +175,18 @@ export class StreamManager {
   }
 
   private handleSessionIdle(state: StreamState): void {
-    this.updateSlackMessage(state, '', true)
+    // If thinking was never closed, append it to the answer
+    // so no content is silently dropped
+    let finalSuffix = ''
+    if (state.isThinkingActive && state.accumulatedThinking && !state.accumulatedText) {
+      // Model started thinking but never produced answer — show thinking as answer
+      state.accumulatedText = state.accumulatedThinking
+      state.accumulatedThinking = ''
+      state.isThinkingActive = false
+    }
+    this.updateSlackMessage(state, finalSuffix, true)
+    // Update reaction to success
+    this.updateReaction(state, 'white_check_mark').catch(() => {})
     this.cleanup(state.sessionId)
     // Fire and forget - don't await async callback
     void this.onStreamEnd?.(state.sessionId)
@@ -133,6 +198,8 @@ export class StreamManager {
   ): void {
     const errorMessage = properties.error?.data?.message || 'Unknown error'
     this.updateSlackMessage(state, `\n\n_Error: ${errorMessage}_`, true)
+    // Update reaction to error
+    this.updateReaction(state, 'x').catch(() => {})
     this.cleanup(state.sessionId)
     // Fire and forget - don't await async callback
     void this.onStreamEnd?.(state.sessionId)
@@ -168,6 +235,11 @@ export class StreamManager {
 
     let text = state.accumulatedText
 
+    // During streaming, show thinking indicator if no answer yet
+    if (!isFinal && !text && state.accumulatedThinking) {
+      text = '🤔 Thinking...'
+    }
+
     // Calculate max length accounting for suffix and cursor
     const truncationSuffix = '\n\n... (truncated)'
     const maxTextLength = MAX_MESSAGE_LENGTH - truncationSuffix.length - (isFinal ? 0 : 1) - suffix.length
@@ -176,12 +248,29 @@ export class StreamManager {
       text = text.slice(0, maxTextLength) + truncationSuffix
     }
 
-    if (state.toolOutputs.size > 0 && isFinal) {
+    // Add tool progress during streaming
+    if (!isFinal && state.toolOutputs.size > 0) {
+      const running = Array.from(state.toolOutputs.values()).filter(t => t.status === 'running')
+      const completed = Array.from(state.toolOutputs.values()).filter(t => t.status === 'completed')
+
+      if (running.length > 0 || completed.length > 0) {
+        const toolLines: string[] = []
+        for (const t of state.toolOutputs.values()) {
+          const icon = t.status === 'completed' ? '✅' : t.status === 'running' ? '🔧' : '⏳'
+          const label = t.title || t.tool
+          toolLines.push(`${icon} ${label}`)
+        }
+        text += '\n\n' + toolLines.join('\n')
+      }
+    }
+
+    // Add tool summary on completion
+    if (isFinal && state.toolOutputs.size > 0) {
       const summary = this.formatToolSummary(state.toolOutputs)
       if (summary) text += '\n\n' + summary
     }
 
-    if (!isFinal && text) {
+    if (!isFinal && text && !text.includes('🤔 Thinking...')) {
       text += '\u258C' // cursor
     }
 
@@ -198,12 +287,32 @@ export class StreamManager {
     }
   }
 
+  private async updateReaction(state: StreamState, emoji: string): Promise<void> {
+    try {
+      // Remove typing reaction first
+      await this.slack.reactions.remove({
+        channel: state.originalChannelId,
+        timestamp: state.originalMessageTs,
+        name: 'typing',
+      }).catch(() => {}) // Ignore if not present
+
+      // Add completion reaction
+      await this.slack.reactions.add({
+        channel: state.originalChannelId,
+        timestamp: state.originalMessageTs,
+        name: emoji,
+      })
+    } catch (error) {
+      console.error('Failed to update reaction:', error)
+    }
+  }
+
   private formatToolSummary(tools: Map<string, ToolOutput>): string {
     const completed = Array.from(tools.values()).filter(t => t.status === 'completed')
     if (completed.length === 0) return ''
 
     const lines = completed.map(t => `✅ ${t.title || t.tool}`)
-    return '*Tools used:*\n' + lines.join('\n')
+    return `*Tools used (${completed.length}):*\n${lines.join('\n')}`
   }
 
   stopStream(sessionId: string): void {

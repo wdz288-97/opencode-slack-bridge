@@ -66,20 +66,22 @@ export class OpenCodeClient {
     }
   }
 
-  async sendPrompt(sessionId: string, prompt: string): Promise<void> {
+  async sendPrompt(sessionId: string, prompt: string, agent?: string): Promise<void> {
     await this.client.session.prompt({
       path: { id: sessionId },
       body: {
         parts: [{ type: 'text', text: prompt }],
+        ...(agent ? { agent } : {}),
       },
     })
   }
 
-  async sendPromptSync(sessionId: string, prompt: string): Promise<OpenCodeMessage> {
+  async sendPromptSync(sessionId: string, prompt: string, agent?: string): Promise<OpenCodeMessage> {
     const response = await this.client.session.prompt({
       path: { id: sessionId },
       body: {
         parts: [{ type: 'text', text: prompt }],
+        ...(agent ? { agent } : {}),
       },
     })
 

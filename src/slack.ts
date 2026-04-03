@@ -8,6 +8,7 @@ export interface SlackBridgeConfig {
   appToken: string
   botToken: string
   opencodeUrl: string
+  opencodeAgent: string
   allowedUsers?: string[]
   allowedChannels?: string[]
 }
@@ -20,6 +21,7 @@ export class SlackBridge {
   private queue: MessageQueue
   private allowedUsers: Set<string>
   private allowedChannels: Set<string>
+  private opencodeAgent: string
 
   constructor(config: SlackBridgeConfig) {
     this.app = new App({
@@ -33,6 +35,7 @@ export class SlackBridge {
     this.queue = new MessageQueue()
     this.allowedUsers = new Set(config.allowedUsers || [])
     this.allowedChannels = new Set(config.allowedChannels || [])
+    this.opencodeAgent = config.opencodeAgent
 
     // StreamManager calls onStreamEnd when session finishes
     this.streamManager = new StreamManager(
@@ -82,7 +85,7 @@ export class SlackBridge {
       }
 
       await this.streamManager.startStream(sessionKey, initialResponse.ts, sessionId)
-      await this.opencode.sendPrompt(sessionId, next.text)
+      await this.opencode.sendPrompt(sessionId, next.text, this.opencodeAgent)
     } catch (error) {
       console.error('Error draining queue:', error)
       this.queue.setProcessing(sessionKey, false)
@@ -144,6 +147,12 @@ export class SlackBridge {
       // Access control
       if (!this.isAuthorized(userId, channelId)) {
         return
+      }
+
+      // Add typing reaction to acknowledge message received
+      const userMessageTs = 'ts' in message ? message.ts : undefined
+      if (userMessageTs) {
+        await this.addReaction(channelId, userMessageTs, 'typing')
       }
 
       // Handle .queue suffix
@@ -229,6 +238,7 @@ export class SlackBridge {
             const fileValidation = this.validateFile(file)
             if (!fileValidation.valid) {
               this.queue.setProcessing(sessionKey, false)
+              await this.updateReaction(channelId, userMessageTs, 'typing', 'x')
               await say({
                 text: fileValidation.error || 'Invalid file',
                 thread_ts: threadTs || undefined,
@@ -255,33 +265,73 @@ export class SlackBridge {
           return
         }
 
-        // Send initial response
+        // Send initial response in thread
         const initialResponse = await say({
-          text: files ? 'Processing files...' : 'Thinking...',
-          thread_ts: threadTs || undefined,
+          text: '🤔 Thinking...',
+          thread_ts: threadTs || userMessageTs || undefined,
         })
 
         if (!initialResponse?.ts) {
           console.error('Failed to send initial response')
           this.queue.setProcessing(sessionKey, false)
+          await this.updateReaction(channelId, userMessageTs, 'typing', 'x')
           return
         }
 
-        // Start streaming
-        await this.streamManager.startStream(sessionKey, initialResponse.ts, sessionId)
+        // Start streaming (pass original message info for reactions)
+        await this.streamManager.startStream(
+          channelId,
+          initialResponse.ts,
+          sessionId,
+          channelId,
+          userMessageTs || initialResponse.ts
+        )
 
         // Send prompt
-        await this.opencode.sendPrompt(sessionId, promptText)
+        await this.opencode.sendPrompt(sessionId, promptText, this.opencodeAgent)
 
       } catch (error) {
         console.error('Error processing message:', error)
         this.queue.setProcessing(sessionKey, false)
+        await this.updateReaction(channelId, userMessageTs, 'typing', 'x')
         await say({
           text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
           thread_ts: threadTs || undefined,
         })
       }
     })
+  }
+
+  // Add reaction to a message
+  private async addReaction(channelId: string, ts: string, emoji: string): Promise<void> {
+    try {
+      await this.app.client.reactions.add({
+        channel: channelId,
+        timestamp: ts,
+        name: emoji,
+      })
+    } catch (error) {
+      // Ignore if reaction already exists or message not found
+    }
+  }
+
+  // Replace one reaction with another
+  private async updateReaction(channelId: string, ts: string | undefined, from: string, to: string): Promise<void> {
+    if (!ts) return
+    try {
+      await this.app.client.reactions.remove({
+        channel: channelId,
+        timestamp: ts,
+        name: from,
+      }).catch(() => {})
+      await this.app.client.reactions.add({
+        channel: channelId,
+        timestamp: ts,
+        name: to,
+      })
+    } catch (error) {
+      // Ignore errors
+    }
   }
 
   private setupCommands() {

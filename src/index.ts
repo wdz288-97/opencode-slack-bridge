@@ -8,6 +8,7 @@ async function main() {
   const slackAppToken = process.env.SLACK_APP_TOKEN
   const slackBotToken = process.env.SLACK_BOT_TOKEN
   const opencodeUrl = process.env.OPENCODE_URL || 'http://localhost:4096'
+  const opencodeAgent = process.env.OPENCODE_AGENT || 'slack-bridge'
   const allowedUsers = process.env.ALLOWED_USERS?.split(',').filter(Boolean) || []
   const allowedChannels = process.env.ALLOWED_CHANNELS?.split(',').filter(Boolean) || []
 
@@ -22,6 +23,7 @@ async function main() {
 
   console.log('Starting OpenCode Slack Bridge...')
   console.log(`OpenCode server: ${opencodeUrl}`)
+  console.log(`Agent: ${opencodeAgent}`)
   if (allowedUsers.length > 0) {
     console.log(`Allowed users: ${allowedUsers.length} configured`)
   }
@@ -33,6 +35,7 @@ async function main() {
     appToken: slackAppToken,
     botToken: slackBotToken,
     opencodeUrl,
+    opencodeAgent,
     allowedUsers: allowedUsers.length > 0 ? allowedUsers : undefined,
     allowedChannels: allowedChannels.length > 0 ? allowedChannels : undefined,
   })
