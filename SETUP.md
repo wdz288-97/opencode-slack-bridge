@@ -41,6 +41,7 @@ Follow these steps to create a Slack app for OpenCode Slack Bridge.
 | `im:history` | Read DM messages |
 | `im:read` | List DM conversations |
 | `im:write` | Start DM conversations |
+| `reactions:write` | Add reactions to messages (shows status) |
 | `users:read` | List workspace users |
 
 ## Step 4: Subscribe to Events
@@ -103,6 +104,7 @@ Create `.env` file with your tokens:
 SLACK_APP_TOKEN=xapp-xxxxxxxxxx
 SLACK_BOT_TOKEN=xoxb-xxxxxxxxxx
 OPENCODE_URL=http://localhost:4096
+OPENCODE_AGENT=slack-bridge  # Optional: agent name from oh-my-opencode.json
 ```
 
 Verify everything works:

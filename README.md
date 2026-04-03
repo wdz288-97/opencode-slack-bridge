@@ -180,6 +180,41 @@ Data persists across restarts. Delete the `./data` folder to reset.
 - Messages sent while busy are automatically queued and processed in order
 - Sessions persist across bridge restarts (stored in SQLite)
 
+## Agent Configuration (OpenCode Only)
+
+The bridge can use different AI agents for each prompt. This is an **OpenCode-specific feature** — other bridges (Discord, web UI, etc.) may handle this differently or not at all.
+
+### Configuring an Agent
+
+```env
+OPENCODE_AGENT=slack-bridge
+```
+
+The agent name must match one defined in your `oh-my-opencode.json`:
+
+```json
+{
+  "agents": {
+    "slack-bridge": {
+      "model": "opencode/minimax-m2.5-free",
+      "fallback_models": ["opencode/qwen3.6-plus-free"]
+    }
+  }
+}
+```
+
+### Available Models
+
+Common models from oh-my-opencode.json:
+
+| Agent | Model | Best For |
+|-------|-------|----------|
+| `sisyphus` | qwen3.6-plus-free | General reasoning |
+| `slack-bridge` | minimax-m2.5-free | Fast responses |
+| `feishu` | minimax-m2.5-free | Fast responses |
+
+> **Note:** If you're connecting to an external service other than OpenCode, agent configuration may not apply. Check that service's documentation for how to specify AI models.
+
 ## File Structure
 
 ```
