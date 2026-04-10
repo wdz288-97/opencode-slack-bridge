@@ -8,7 +8,7 @@ async function main() {
   const slackAppToken = process.env.SLACK_APP_TOKEN
   const slackBotToken = process.env.SLACK_BOT_TOKEN
   const opencodeUrl = process.env.OPENCODE_URL || 'http://localhost:4096'
-  const opencodeAgent = process.env.OPENCODE_AGENT || 'slack-bridge'
+  const opencodeAgent = process.env.OPENCODE_AGENT || 'slack-agent'
   const allowedUsers = process.env.ALLOWED_USERS?.split(',').filter(Boolean) || []
   const allowedChannels = process.env.ALLOWED_CHANNELS?.split(',').filter(Boolean) || []
 

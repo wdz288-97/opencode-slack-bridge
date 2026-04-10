@@ -57,16 +57,34 @@ open SETUP.md
 # Verify setup
 npm run setup
 
-# Start OpenCode server (in another terminal)
+# Start everything using the launcher (auto-detects OpenCode port)
+run.bat
+
+# OR start manually:
+# Terminal 1: OpenCode server (port auto-detected)
 opencode serve
 
-# Start the bridge
+# Terminal 2: Bridge
 npm run dev
 ```
 
 ## Setup
 
 See **[SETUP.md](SETUP.md)** for detailed Slack app creation steps.
+
+## Windows Launcher (run.bat)
+
+On Windows, use `run.bat` to automatically:
+1. Find existing OpenCode server on common ports (4096, 5000, 6000, 61108, etc.)
+2. Start OpenCode if not running (auto-detects the port it uses)
+3. Update `.env` with the correct port
+4. Start the bridge
+
+```bash
+run.bat
+```
+
+This solves the issue where OpenCode may start on a random port instead of 4096 (common since OpenCode v1.3+ where HTTP server is disabled by default).
 
 ## Multiple Clients / Shared Server
 
@@ -180,38 +198,74 @@ Data persists across restarts. Delete the `./data` folder to reset.
 - Messages sent while busy are automatically queued and processed in order
 - Sessions persist across bridge restarts (stored in SQLite)
 
-## Agent Configuration (OpenCode Only)
+### Debug Mode
 
-The bridge can use different AI agents for each prompt. This is an **OpenCode-specific feature** — other bridges (Discord, web UI, etc.) may handle this differently or not at all.
+Enable debug logging to see what's happening:
 
-### Configuring an Agent
-
-```env
-OPENCODE_AGENT=slack-bridge
+```bash
+DEBUG=true npm run dev
 ```
 
-The agent name must match one defined in your `oh-my-opencode.json`:
+This shows:
+- OpenCode events (step-start, step-finish, tool calls, etc.)
+- Session status changes
+- Reasoning/thinking filtering
+
+Useful when troubleshooting why the bot isn't responding or is doing unexpected things.
+
+## Agent Configuration (OpenCode Only)
+
+The bridge uses the `slack-agent` agent which is pre-configured to use Google Workspace (gws) CLI tools.
+
+### Default Agent
+
+```env
+OPENCODE_AGENT=slack-agent
+```
+
+The agent name must match one defined in your OpenCode config. The bridge expects a `slack-agent` to be defined in `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "agents": {
-    "slack-bridge": {
-      "model": "opencode/minimax-m2.5-free",
-      "fallback_models": ["opencode/qwen3.6-plus-free"]
+  "agent": {
+    "slack-agent": {
+      "description": "Expert in Google Workspace CLI (gws) for managing Drive, Gmail, Calendar, Sheets, Docs, and more via Slack.",
+      "mode": "subagent",
+      "prompt": "{file:~/.config/opencode/agents/slack-agent.md}",
+      "tools": {
+        "read": true,
+        "bash": true
+      },
+      "model": "opencode/minimax-m2.5-free"
     }
   }
 }
 ```
 
+> **Important:** The agent only has `read` and `bash` permissions — no `write` or `edit`. This ensures safety when running via Slack.
+
 ### Available Models
+
+The bridge uses MiniMax M2.5 Free by default which has a known behavior: it outputs thinking/reasoning content that needs to be filtered. The bridge handles this automatically.
 
 Common models from oh-my-opencode.json:
 
 | Agent | Model | Best For |
 |-------|-------|----------|
+| `slack-agent` | minimax-m2.5-free | Google Workspace tasks (default) |
 | `sisyphus` | qwen3.6-plus-free | General reasoning |
-| `slack-bridge` | minimax-m2.5-free | Fast responses |
-| `feishu` | minimax-m2.5-free | Fast responses |
+| `junior` | minimax-m2.5-free | Fast responses |
+
+### Thinking/Reasoning Filtering
+
+The bridge filters out model thinking from Slack output using **event-level filtering** (not regex). This is more reliable and works even when the model doesn't use `<thinking>` tags.
+
+How it works:
+1. OpenCode emits `message.part.updated` events with `part.type: "reasoning"`
+2. Bridge tracks reasoning part IDs
+3. Filters out `message.part.delta` events from reasoning parts
+
+This is particularly useful for models like MiniMax M2.5 that don't have a built-in "thinking disable" API parameter.
 
 > **Note:** If you're connecting to an external service other than OpenCode, agent configuration may not apply. Check that service's documentation for how to specify AI models.
 
@@ -225,11 +279,14 @@ opencode-slack-bridge/
 │   ├── opencode.ts     # OpenCode SDK client + SSE event bus
 │   ├── sessions.ts     # Session management
 │   ├── database.ts     # SQLite persistence (better-sqlite3)
-│   ├── streaming.ts    # SSE → Slack message updates
+│   ├── streaming.ts    # SSE → Slack message updates (with thinking filter)
 │   ├── queue.ts        # Message queue for busy sessions
 │   └── setup.ts        # Verification script
 ├── data/               # SQLite database (gitignored)
 ├── .env.example        # Token template
+├── run.bat             # Windows launcher (auto port detection)
+├── SLACK_AGENT.md      # Agent prompt for gws tools
+├── SLACK_FORMATTING.md # Slack formatting rules
 ├── SETUP.md            # Slack app setup guide
 ├── README.md           # This file
 └── package.json

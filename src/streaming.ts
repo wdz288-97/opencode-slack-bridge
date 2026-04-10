@@ -1,6 +1,14 @@
 import type { WebClient } from '@slack/web-api'
 import type { OpenCodeClient } from './opencode.js'
 
+// Debug logging helper
+const DEBUG = process.env.DEBUG === 'true'
+function debugLog(sessionId: string, ...args: unknown[]): void {
+  if (DEBUG) {
+    console.log(`[${new Date().toISOString()}] [${sessionId.slice(0,8)}]`, ...args)
+  }
+}
+
 interface StreamState {
   channelId: string
   messageTs: string
@@ -13,6 +21,7 @@ interface StreamState {
   isThinkingActive: boolean
   lastUpdate: number
   toolOutputs: Map<string, ToolOutput>
+  reasoningPartIds: Set<string>  // Track reasoning part IDs to filter at source
 }
 
 interface ToolOutput {
@@ -76,6 +85,7 @@ export class StreamManager {
       isThinkingActive: false,
       lastUpdate: Date.now(),
       toolOutputs: new Map(),
+      reasoningPartIds: new Set(),
     }
 
     this.streams.set(sessionId, state)
@@ -98,29 +108,62 @@ export class StreamManager {
     const eventType = event.type as string
     const props = event.properties as Record<string, unknown> | undefined
 
+    debugLog(sessionId, 'EVENT:', eventType, props ? Object.keys(props) : '')
+
     switch (eventType) {
       case 'message.part.delta':
-        this.handleDelta(state, props as { field: string; delta: string })
+        this.handleDelta(state, props as { partID?: string; field: string; delta: string })
         break
 
       case 'message.part.updated':
         this.handlePartUpdated(state, props as { part: Record<string, unknown> })
         break
 
+      case 'session.status':
+        debugLog(sessionId, 'SESSION STATUS:', props)
+        break
+
+      case 'step-start':
+        debugLog(sessionId, 'STEP START:', props)
+        break
+
+      case 'step-finish':
+        debugLog(sessionId, 'STEP FINISH:', props)
+        break
+
+      case 'tool-start':
+        debugLog(sessionId, 'TOOL START:', props)
+        break
+
+      case 'tool-call':
+        debugLog(sessionId, 'TOOL CALL:', props)
+        break
+
       case 'session.idle':
+        debugLog(sessionId, 'SESSION IDLE - completed')
         this.handleSessionIdle(state)
         break
 
       case 'session.error':
+        debugLog(sessionId, 'SESSION ERROR:', props)
         this.handleSessionError(state, props as { error?: { data?: { message?: string } } })
+        break
+
+      case 'session.busy':
+        debugLog(sessionId, 'SESSION BUSY')
         break
     }
   }
 
   private handleDelta(
     state: StreamState,
-    properties: { field: string; delta: string }
+    properties: { partID?: string; field: string; delta: string }
   ): void {
+    // Filter out deltas from reasoning parts at the source
+    if (properties.partID && state.reasoningPartIds.has(properties.partID)) {
+      return // Skip reasoning deltas entirely
+    }
+
     if (properties.field === 'text') {
       const delta = properties.delta
 
@@ -157,10 +200,19 @@ export class StreamManager {
     properties: { part: Record<string, unknown> }
   ): void {
     const part = properties.part
+    const partId = part.id as string
+    const partType = part.type as string
 
-    if (part.type === 'tool') {
+    // Track reasoning part IDs to filter them at the source
+    if (partType === 'reasoning') {
+      state.reasoningPartIds.add(partId)
+    }
+
+    if (partType === 'tool') {
       const toolState = part.state as { status: string; input?: unknown; output?: string; title?: string }
       const callID = (part.callID as string) || (part.tool as string)
+
+      debugLog(state.sessionId, 'TOOL:', part.tool, 'state:', toolState.status)
 
       state.toolOutputs.set(callID, {
         tool: part.tool as string,
@@ -175,14 +227,14 @@ export class StreamManager {
   }
 
   private handleSessionIdle(state: StreamState): void {
-    // If thinking was never closed, append it to the answer
-    // so no content is silently dropped
+    // Discard thinking content - never show it in output
+    // Just clear thinking and use accumulatedText as final answer
     let finalSuffix = ''
     if (state.isThinkingActive && state.accumulatedThinking && !state.accumulatedText) {
-      // Model started thinking but never produced answer — show thinking as answer
-      state.accumulatedText = state.accumulatedThinking
+      // Model thought but never produced answer - show nothing or minimal
       state.accumulatedThinking = ''
       state.isThinkingActive = false
+      // Don't show thinking as answer - just leave empty or a brief message
     }
     this.updateSlackMessage(state, finalSuffix, true)
     // Update reaction to success
@@ -235,9 +287,74 @@ export class StreamManager {
 
     let text = state.accumulatedText
 
+    // Remove thinking tags from final output
+    // Also handle unclosed tags and edge cases
+    text = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    text = text.replace(/<antThinking>[\s\S]*?<\/antThinking>/gi, '')
+    // Remove orphaned thinking start tags (unclosed)
+    text = text.replace(/<thinking>/gi, '')
+    text = text.replace(/<antThinking>/gi, '')
+    // Remove orphaned thinking end tags (no opening)
+    text = text.replace(/<\/thinking>/gi, '')
+    text = text.replace(/<\/antThinking>/gi, '')
+
+    // Filter out thinking/reasoning patterns - model outputs this without tags
+    // These patterns match common reasoning phrases the model outputs
+
+    // 1. Tool/capability explanation patterns (most common for "Looking at my available tools..." type)
+    const toolPatterns = [
+      // Looking at my available tools / Checking my available tools
+      /(?:Looking at|Checking|Scanning|Reviewing) (?:my )?available tools[,.]?\s*/gi,
+      /(?:I have|I do have|I can see|I can use|I have access to) (?:access to )?(?:the )?(?:gws|Google Workspace|google workspace) (?:tool|CLI|command)?s?(?: available)?[.,:;\s]*/gi,
+      /(?:I don't have|I cannot|I do not have|I can't access) (?:access to |the )?(?:gws|Google Workspace) (?:tool|CLI)?[.,:\s]*/gi,
+      /(?:The )?(?:gws|GWS|Google Workspace) (?:tool|CLI|command)(?: is|'?s)? (?:not |un)?available[.,:\s]*/gi,
+      /I (?:can|cannot|don't|do not|have|need|want|will|would|should)(?: not|'t)? .*(?:tool|available|access|see|have access)/gi,
+      /(?:Looking at|I can|I do have|I see|I don't see|I need to check|I should verify|I will check|Let me provide|I can provide|I will provide|I want to|Maybe I|Let me know if|I can help|I need more|I should have)/gim,
+    ]
+
+    // 2. Standard reasoning phrases
+    const thinkingPatterns = [
+      /^(Let me think|I'll think|Consider|Let me consider|I'll analyze|Analyzing|Thinking|Hmm|Uhh|Well,|Let me look at|Let me check|Based on|I'll need|First, let me|Giving|Providing|Sure,|Of course,|Certainly,|I can|I don't have|I cannot|I need to|I should|I'd be|I would be|I will|Sure thing|Absolutely|Here is|Here's)/i,
+      /^(Wait,|Wait -|Hold on,|One moment,|Actually,|Now,|So,|Then,|Next,|Finally,|Also,|Additionally,|Moreover,|Furthermore,)/im,
+      /^(I should (?:note|mention|add| clarify|explain|point out|confirm|verify|check|add)|Let me (?:re-?read|clarify|explain|add|verify|check))/im,
+    ]
+
+    // Apply tool patterns first (most specific)
+    for (const pattern of toolPatterns) {
+      text = text.replace(pattern, '')
+    }
+
+    // Apply thinking patterns
+    for (const pattern of thinkingPatterns) {
+      text = text.replace(pattern, '')
+    }
+
+    // Remove lines that are entirely thinking-like
+    const thinkingLines = [
+      /Looking at my available tools[,\s]*(?:I|we)? .*/gim,
+      /(?:The )?(?:gws|GWS|Google Workspace) (?:tool|CLI|command)(?: is|'?s)? (?:not available|unavailable)/gim,
+      /I (?:do not|don't) have (?:access to|a) .* tool/gim,
+    ]
+    for (const linePattern of thinkingLines) {
+      text = text.replace(linePattern, '')
+    }
+
+    // Clean up empty lines and whitespace
+    text = text.replace(/\n\s*\n/g, '\n')
+    text = text.replace(/^\s+/gm, '')  // Remove leading whitespace on each line
+
+    // Fix markdown-style formatting for Slack:
+    // - Bold: **text** → *text* (most common issue)
+    // - Strikethrough: ~~text~~ → ~text~
+    text = text.replace(/\*\*/g, '*')
+    text = text.replace(/~~/g, '~')
+
+    // Note: italic conversion (*text* → _text_) is risky since * is also used for bold
+    // and bullet points. Skipping for safety.
+
     // During streaming, show thinking indicator if no answer yet
     if (!isFinal && !text && state.accumulatedThinking) {
-      text = '🤔 Thinking...'
+      text = ':typing: Typing...'
     }
 
     // Calculate max length accounting for suffix and cursor
@@ -270,7 +387,8 @@ export class StreamManager {
       if (summary) text += '\n\n' + summary
     }
 
-    if (!isFinal && text && !text.includes('🤔 Thinking...')) {
+    // Only add cursor when no tool outputs (tools show their own icons)
+    if (!isFinal && text && !text.includes(':typing: Typing...') && state.toolOutputs.size === 0) {
       text += '\u258C' // cursor
     }
 

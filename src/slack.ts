@@ -144,6 +144,8 @@ export class SlackBridge {
       const files = 'files' in message ? message.files : undefined
       const sessionKey = this.getSessionKey(channelId, threadTs)
 
+      console.log(`[SLACK] Message received from ${userId} in ${channelId}${threadTs ? ':'+threadTs : ''}`)
+
       // Access control
       if (!this.isAuthorized(userId, channelId)) {
         return
@@ -180,6 +182,7 @@ export class SlackBridge {
             text: `Queued message (${this.queue.size(sessionKey)} in queue)`,
             thread_ts: threadTs || undefined,
           })
+          console.log(`[SLACK] Queued message (${this.queue.size(sessionKey)} in queue)`)
         }
         return
       }
@@ -223,6 +226,7 @@ export class SlackBridge {
           const session = await this.opencode.createSession()
           sessionId = session.id
           this.sessions.set(sessionKey, sessionId)
+          console.log(`[SESSION] ${sessionKey} -> ${sessionId}`)
           console.log(`Created session ${sessionId} for ${sessionKey}`)
         }
 
@@ -267,7 +271,7 @@ export class SlackBridge {
 
         // Send initial response in thread
         const initialResponse = await say({
-          text: '🤔 Thinking...',
+          text: ':typing: Typing...',
           thread_ts: threadTs || userMessageTs || undefined,
         })
 
@@ -288,6 +292,7 @@ export class SlackBridge {
         )
 
         // Send prompt
+        console.log(`[OPENCODE] Sending prompt: "${promptText.slice(0, 60)}${promptText.length > 60 ? '...' : ''}"`)
         await this.opencode.sendPrompt(sessionId, promptText, this.opencodeAgent)
 
       } catch (error) {
