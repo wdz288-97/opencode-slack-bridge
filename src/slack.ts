@@ -65,13 +65,20 @@ export class SlackBridge {
   // Process queued messages after session becomes idle
   private async drainQueue(sessionKey: string): Promise<void> {
     const next = this.queue.dequeue(sessionKey)
-    if (!next) return
+    if (!next) {
+      console.log(`[drainQueue] No queued message for ${sessionKey}`)
+      return
+    }
 
     const sessionId = this.sessions.get(sessionKey)
-    if (!sessionId) return
+    if (!sessionId) {
+      console.log(`[drainQueue] No session found for ${sessionKey}`)
+      return
+    }
 
     try {
       this.queue.setProcessing(sessionKey, true)
+      console.log(`[drainQueue] Processing queued message: "${next.text.slice(0, 50)}..."`)
 
       const initialResponse = await this.app.client.chat.postMessage({
         channel: next.channelId,
@@ -80,12 +87,16 @@ export class SlackBridge {
       })
 
       if (!initialResponse?.ts) {
+        console.log(`[drainQueue] Failed to send initial response`)
         this.queue.setProcessing(sessionKey, false)
         return
       }
 
+      console.log(`[drainQueue] Starting stream, sessionId: ${sessionId}`)
       await this.streamManager.startStream(sessionKey, initialResponse.ts, sessionId)
+      console.log(`[drainQueue] Sending prompt to OpenCode...`)
       await this.opencode.sendPrompt(sessionId, next.text, this.opencodeAgent)
+      console.log(`[drainQueue] Prompt sent, waiting for response...`)
     } catch (error) {
       console.error('Error draining queue:', error)
       this.queue.setProcessing(sessionKey, false)

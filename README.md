@@ -29,6 +29,9 @@ Chat with your OpenCode coding agent directly from Slack.
 - **Tool output display** — See what tools OpenCode used
 - **Session persistence** — SQLite-backed, survives restarts
 - **Thread support** — Bot responds in threads
+- **Block Kit formatting** — Uses Slack markdown blocks for better rendering
+- **Auto-chunking** — Splits long messages (>11,000 chars) into threaded messages
+- **Thinking filter** — Event-level filtering removes model reasoning from output
 
 ## Prerequisites
 
@@ -206,12 +209,34 @@ Enable debug logging to see what's happening:
 DEBUG=true npm run dev
 ```
 
+Or use `run.bat` which enables DEBUG by default.
+
 This shows:
 - OpenCode events (step-start, step-finish, tool calls, etc.)
 - Session status changes
 - Reasoning/thinking filtering
 
 Useful when troubleshooting why the bot isn't responding or is doing unexpected things.
+
+## Slack Formatting
+
+The bridge uses **Slack Block Kit** with markdown blocks for rich formatting:
+
+| Feature | Syntax | Example |
+|---------|--------|---------|
+| Bold | `*text*` | *bold* |
+| Italic | `_text_` | _italic_ |
+| Code | ``` `code` ``` | `code` |
+| Code block | ```` ```lang ``` ```` | ```js |
+| Block quote | `> text` | > quote |
+
+### Message Chunking
+
+Long messages (>11,000 characters) are automatically split and sent as threaded follow-up messages with `[1/3]`, `[2/3]`, etc. markers.
+
+### Code Detection
+
+The bridge automatically detects code sections and formats them appropriately for Slack.
 
 ## Agent Configuration (OpenCode Only)
 
@@ -272,6 +297,30 @@ This is particularly useful for models like MiniMax M2.5 that don't have a built
 ## File Structure
 
 ```
+opencode-slack-bridge/
+├── src/
+│   ├── index.ts        # Entry point
+│   ├── slack.ts        # Slack Bolt handlers + slash commands
+│   ├── opencode.ts     # OpenCode SDK client + SSE event bus
+│   ├── sessions.ts     # Session management
+│   ├── database.ts     # SQLite persistence (better-sqlite3)
+│   ├── streaming.ts    # SSE → Slack message updates (with thinking filter)
+│   ├── queue.ts       # Message queue for busy sessions
+│   ├── formatting.ts # Slack formatting utilities
+│   ├── detect-port.ts # Dynamic port detection
+│   └── setup.ts       # Environment check
+├── data/              # SQLite database (gitignored)
+├── docs/
+│   └── TECHNICAL.md   # Architecture + implementation details
+├── .env.example       # Token template
+├── run.bat            # Windows launcher (auto port detection)
+├── SETUP.md          # Slack app setup guide
+├── SLACK_AGENT.md     # Agent prompt for gws tools
+├── README.md         # This file
+└── package.json
+```
+
+For detailed technical documentation, see `docs/TECHNICAL.md`.
 opencode-slack-bridge/
 ├── src/
 │   ├── index.ts        # Entry point
