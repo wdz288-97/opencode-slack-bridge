@@ -29,14 +29,16 @@ export class OpenCodeClient {
   private eventBus = new EventEmitter()
   private subscribed = false
   private subscribePromise: Promise<void> | null = null
+  private baseUrl: string
 
   constructor(baseUrl: string) {
+    this.baseUrl = baseUrl
     this.client = createOpencodeClient({ baseUrl })
   }
 
   async checkHealth(): Promise<{ healthy: boolean; version: string }> {
-    const baseUrl = (this.client as any).config?.baseUrl || 'http://localhost:4096'
-    const url = `${baseUrl}/global/health`
+    const url = `${this.baseUrl}/global/health`
+    console.log(`[checkHealth] ${url}`)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
 
